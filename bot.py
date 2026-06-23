@@ -1,10 +1,12 @@
 import asyncio
+import json
 import os
 import signal
 import xml.sax.saxutils as xml_utils
 from functools import partial
 
 import aiohttp
+import httpx
 from dotenv import load_dotenv
 from fastapi import WebSocket
 from loguru import logger
@@ -392,6 +394,77 @@ def _pick_transfer_rule(transfer_rules: list[dict]) -> dict | None:
     return sorted(enabled, key=lambda r: r.get("priority", 99))[0]
 
 
+async def extract_answers_from_description(
+    description: str, questions: list[dict]
+) -> dict:
+    """Run a single LLM pass over the caller's free-form intro and pre-fill any
+    question answers it can confidently extract. Returns {field_id: answer}.
+
+    Only fills fields the caller clearly answered — leaves the rest for the bot
+    to ask normally. Conservative on purpose: a wrong guess is worse than a
+    repeated question.
+    """
+    if not description.strip() or not questions:
+        return {}
+
+    # Only consider enabled questions; give the model the field_id + question text
+    askable = [
+        {"field_id": q["field_id"], "question": q["question"]}
+        for q in questions
+        if q.get("is_enabled", True)
+    ]
+    if not askable:
+        return {}
+
+    field_lines = "\n".join(f'- {q["field_id"]}: "{q["question"]}"' for q in askable)
+    system = (
+        "You extract answers to intake questions from what a caller said. "
+        "Return ONLY a JSON object mapping field_id to the answer, and ONLY for "
+        "questions the caller has CLEARLY and EXPLICITLY answered in their statement. "
+        "If a question is not clearly answered, OMIT that field_id entirely — never guess. "
+        "Answers must be the caller's actual information, not paraphrased advice. "
+        'Example output: {"first_name": "John", "state": "Texas"}'
+    )
+    user = (
+        f"Caller said:\n\"{description}\"\n\n"
+        f"Intake questions (field_id: question):\n{field_lines}\n\n"
+        "Return the JSON object of confidently-extracted answers."
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {os.getenv('OPENAI_API_KEY', '')}"},
+                json={
+                    "model": "gpt-4o-mini",
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                    "response_format": {"type": "json_object"},
+                    "temperature": 0,
+                },
+            )
+            resp.raise_for_status()
+            content = resp.json()["choices"][0]["message"]["content"]
+            extracted = json.loads(content)
+    except Exception as e:
+        logger.error(f"Answer extraction failed: {e}")
+        return {}
+
+    # Keep only valid field_ids with non-empty string values
+    valid_ids = {q["field_id"] for q in askable}
+    cleaned = {
+        k: str(v).strip()
+        for k, v in extracted.items()
+        if k in valid_ids and str(v).strip()
+    }
+    if cleaned:
+        logger.info(f"Pre-filled {len(cleaned)} answer(s) from intro: {list(cleaned.keys())}")
+    return cleaned
+
+
 def make_save_node(collected: dict) -> NodeConfig:
     """Terminal node — thanks caller and ends the conversation."""
     return NodeConfig(
@@ -408,9 +481,6 @@ def make_save_node(collected: dict) -> NodeConfig:
     )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Question node handlers
-# ─────────────────────────────────────────────────────────────────────────────
 
 async def handle_answer(
     args: dict,
@@ -427,8 +497,11 @@ async def handle_answer(
     transfer_in_progress: list,
 ) -> tuple:
     answer = args.get("answer", "")
+
+    # Save current field immediately
     collected[q["field_id"]] = answer
     logger.info(f"Q[{q['field_id']}] = {answer!r}")
+
     return answer, make_question_node(
         questions, collected, index + 1, transfer_rule, call_sid, firm, case_types,
         transfer_in_progress=transfer_in_progress,
@@ -539,6 +612,11 @@ def make_question_node(
         if cond_field and str(collected.get(cond_field, "")) != cond_value:
             index += 1
             continue
+        # Skip questions already answered by background extraction
+        if q["field_id"] in collected:
+            logger.info(f"Skipping Q[{q['field_id']}] — already answered")
+            index += 1
+            continue
         break
     else:
         return make_save_node(collected)
@@ -551,9 +629,11 @@ def make_question_node(
         FlowsFunctionSchema(
             name="record_answer",
             description=(
-                "Call this immediately after the caller says ANYTHING in response to the question — "
-                "even one word, even if they refuse or go off-topic. "
-                "Never respond conversationally before calling this."
+                "ALWAYS call this the instant the caller says anything — "
+                "one word, partial answer, refusal, or off-topic response. "
+                "You MUST call this before saying anything else. No exceptions. "
+                "Do NOT respond conversationally, offer empathy, or ask follow-up questions. "
+                "Just call this function with whatever the caller said."
             ),
             properties={
                 "answer": {"type": "string", "description": "Exactly what the caller said"},
@@ -624,7 +704,10 @@ def make_question_node(
         task_messages=[{
             "role": "developer",
             "content": (
-                f'Ask the caller this exact question, word for word: "{q["question"]}"{options_hint}'
+                f'Ask the caller this exact question, word for word: "{q["question"]}"{options_hint} '
+                "After the caller responds — no matter what they say — call record_answer immediately. "
+                "Do NOT respond conversationally first. Do NOT say 'great' or 'I see' or ask follow-ups. "
+                "Do NOT offer advice or empathy. Call record_answer, then the next question will play."
             ),
         }],
         functions=functions,
@@ -670,6 +753,13 @@ async def handle_case_type(
 
     if not questions:
         return ctype_id, make_save_node(collected)
+
+    # Pre-fill answers the caller already gave in their opening description so the
+    # bot doesn't re-ask them. make_question_node skips any field_id in collected.
+    description = args.get("caller_description", "")
+    if description:
+        prefilled = await extract_answers_from_description(description, questions)
+        collected.update(prefilled)
 
     return ctype_id, make_question_node(
         questions, collected, 0, transfer_rule, call_sid, firm, case_types,
@@ -727,8 +817,13 @@ def make_case_type_node(
     return NodeConfig(
         name="select_case_type",
         role_message=(
-            f"You are a professional receptionist for {firm['name']}. "
-            "Be warm, clear, and concise. Never skip a question."
+            f"You are a strict intake receptionist for {firm['name']}. "
+            "Your ONLY job is to collect information by calling the available functions. "
+            "You MUST call a function after every caller response — never reply in plain text instead. "
+            "Do NOT offer advice, empathy, opinions, or open-ended follow-up questions. "
+            "Do NOT say things like 'that sounds like a good step' or 'what specific concerns do you have'. "
+            "When a caller gives you information, call the appropriate function immediately. "
+            "Never engage in conversation — only collect and record."
         ),
         task_messages=[{
             "role": "developer",
@@ -736,7 +831,12 @@ def make_case_type_node(
                 "The caller has already been greeted. Do NOT say hello or repeat the greeting. "
                 "Wait silently for the caller to describe their situation. "
                 "Listen to what they describe. DO NOT list or mention any case types out loud. "
-                "Internally match their description to one of these case types and call select_case_type:\n"
+                "DO NOT respond conversationally or ask follow-up questions under any circumstances. "
+                "As soon as you can identify the case type from what the caller said — even partially — "
+                "call select_case_type immediately without saying anything first. "
+                "When you call it, pass caller_description containing the caller's FULL verbatim "
+                "statement — every name, location, date, and detail they mentioned. "
+                "Internally match their description to one of these case types:\n"
                 f"{case_list}"
             ),
         }],
@@ -750,8 +850,16 @@ def make_case_type_node(
                         "type": "string",
                         "description": "The id of the matching case type",
                     },
+                    "caller_description": {
+                        "type": "string",
+                        "description": (
+                            "The caller's FULL, verbatim statement of everything they said "
+                            "about their situation — every detail, name, location, fact they "
+                            "volunteered. Copy it as completely as possible."
+                        ),
+                    },
                 },
-                required=["case_type_id"],
+                required=["case_type_id", "caller_description"],
                 handler=partial(
                     handle_case_type,
                     case_types=case_types,
@@ -839,7 +947,6 @@ def _build_pipeline(transport, voice_id: str = DEFAULT_VOICE_ID):
         context,
         user_params=LLMUserAggregatorParams(
             vad_analyzer=SileroVADAnalyzer(),
-            filter_incomplete_user_turns=True,
         ),
     )
     pipeline = Pipeline([
@@ -966,7 +1073,10 @@ async def run_attorney_bot(
 async def run_bot(connection: SmallWebRTCConnection) -> None:
     transport = SmallWebRTCTransport(
         connection,
-        TransportParams(audio_out_enabled=True, audio_in_enabled=True),
+        TransportParams(
+            audio_out_enabled=True,
+            audio_in_enabled=True,
+        ),
     )
     phone = os.getenv("AL_BACKEND_FALLBACK_PHONE", "")
 

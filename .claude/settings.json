@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(awk -F: '$1 > 480 && $1 < 620')",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('bot.py'\\).read\\(\\)\\); print\\('OK'\\)\")"
+    ]
+  }
+}
