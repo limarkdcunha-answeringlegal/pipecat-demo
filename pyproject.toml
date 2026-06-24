@@ -12,3 +12,8 @@ dependencies = [
     "pipecat-ai[cartesia,daily,google,rnnoise,silero,webrtc]>=1.3.0",
     "uvicorn>=0.49.0",
 ]
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.6.0",
+]
