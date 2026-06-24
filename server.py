@@ -47,6 +47,7 @@ async def root():
 # SmallWebRTC endpoints (browser + prebuilt UI)
 # ---------------------------------------------------------------------------
 
+
 @app.post("/start")
 async def start(request: Request):
     """Prebuilt UI calls this first. Returns webrtcRequestParams so the
@@ -59,8 +60,6 @@ async def start(request: Request):
             "endpoint": f"{base}/offer",
         }
     }
-
-
 
 
 async def _handle_offer(data: dict):
@@ -128,6 +127,7 @@ async def ice_candidates_prebuilt(pc_id: str, data: dict):
 # Twilio telephony endpoints
 # ---------------------------------------------------------------------------
 
+
 def _twiml_response(websocket_url: str) -> str:
     """TwiML that instructs Twilio to stream call audio to our WebSocket."""
     return (
@@ -153,7 +153,10 @@ async def twilio_answer(request: Request):
 
     public_base = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
     if public_base:
-        ws_url = public_base.replace("https://", "wss://").replace("http://", "ws://") + "/twilio/ws"
+        ws_url = (
+            public_base.replace("https://", "wss://").replace("http://", "ws://")
+            + "/twilio/ws"
+        )
     else:
         host = request.headers.get("host", "localhost:7860")
         scheme = "wss" if request.url.scheme == "https" else "ws"
@@ -193,11 +196,11 @@ async def twilio_websocket(websocket: WebSocket):
     start = msg.get("start", {})
     stream_sid = start.get("streamSid", msg.get("streamSid", ""))
     call_sid = start.get("callSid", "")
-    caller_phone = (
-        start.get("customParameters", {}).get("from")
-    )
+    caller_phone = start.get("customParameters", {}).get("from")
 
-    logger.info(f"Twilio stream started: stream_sid={stream_sid} call_sid={call_sid} from={caller_phone}")
+    logger.info(
+        f"Twilio stream started: stream_sid={stream_sid} call_sid={call_sid} from={caller_phone}"
+    )
 
     await run_bot_twilio(
         websocket=websocket,
@@ -233,7 +236,9 @@ async def attorney_websocket(websocket: WebSocket):
     caller_sid = params.get("caller_sid", "")
     contact_name = params.get("contact_name", "")
 
-    logger.info(f"Attorney stream: stream_sid={stream_sid} call_sid={call_sid} caller_sid={caller_sid}")
+    logger.info(
+        f"Attorney stream: stream_sid={stream_sid} call_sid={call_sid} caller_sid={caller_sid}"
+    )
 
     await run_attorney_bot(
         websocket=websocket,

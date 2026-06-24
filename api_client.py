@@ -15,10 +15,14 @@ async def fetch_company_details(phone: str) -> dict:
     headers = {"Authorization": f"Bearer {api_key}"}
 
     async with aiohttp.ClientSession() as session:
-        async with session.post(url, json={"incoming_number": phone}, headers=headers) as resp:
+        async with session.post(
+            url, json={"incoming_number": phone}, headers=headers
+        ) as resp:
             resp.raise_for_status()
             data = await resp.json()
-            logger.info(f"Fetched company details for {phone}: firm={data.get('firm', {}).get('name')}")
+            logger.info(
+                f"Fetched company details for {phone}: firm={data.get('firm', {}).get('name')}"
+            )
             return data
 
 

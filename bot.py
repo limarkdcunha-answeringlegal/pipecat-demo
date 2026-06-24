@@ -18,8 +18,10 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
     LLMUserAggregatorParams,
 )
+from pipecat.frames.frames import LLMUpdateSettingsFrame
 from pipecat.serializers.twilio import TwilioFrameSerializer
 from pipecat.services.cartesia.stt import CartesiaSTTService
+from pipecat.services.settings import LLMSettings
 from pipecat.services.cartesia.tts import CartesiaTTSService
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.transports.base_transport import TransportParams
@@ -41,7 +43,9 @@ load_dotenv(override=True)
 # ─────────────────────────────────────────────────────────────────────────────
 
 DEFAULT_VOICE_ID = "32b3f3c5-7171-46aa-abe7-b598964aa793"
-HOLD_MUSIC_URL = "https://demo.twilio.com/docs/classic.mp3"  # reliable Twilio-hosted URL
+HOLD_MUSIC_URL = (
+    "https://demo.twilio.com/docs/classic.mp3"  # reliable Twilio-hosted URL
+)
 ATTORNEY_BOT_WEBSOCKET_PATH = "/twilio/attorney-ws"
 
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
@@ -56,6 +60,7 @@ PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
 # which run as completely separate async contexts. The registry is the shared
 # lookup bridge between them, keyed by caller call_sid.
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TransferRegistry:
     def __init__(self):
@@ -110,6 +115,7 @@ def fetch_transfer_context(call_sid: str) -> dict:
 # Twilio helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 async def _twilio_post(path: str, data: dict) -> dict:
     """Authenticated POST to the Twilio REST API. Raises RuntimeError on 4xx/5xx."""
     url = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_SID}{path}"
@@ -152,16 +158,10 @@ async def _resume_caller(call_sid: str) -> None:
         return
 
     ws_url = (
-        PUBLIC_BASE_URL
-        .replace("https://", "wss://")
-        .replace("http://", "ws://")
+        PUBLIC_BASE_URL.replace("https://", "wss://").replace("http://", "ws://")
         + "/twilio/ws"
     )
-    twiml = (
-        f"<Response><Connect>"
-        f"<Stream url='{ws_url}'/>"
-        f"</Connect></Response>"
-    )
+    twiml = f"<Response><Connect><Stream url='{ws_url}'/></Connect></Response>"
     try:
         await _twilio_post(f"/Calls/{call_sid}.json", {"Twiml": twiml})
         logger.info(f"Caller {call_sid} resumed on bot pipeline")
@@ -176,14 +176,19 @@ async def _bridge_calls(caller_sid: str, attorney_sid: str) -> None:
     won't kill the room.
     """
     if not caller_sid or attorney_sid == "MOCK_ATTORNEY_SID":
-        logger.info(f"[MOCK] Would bridge caller {caller_sid or '(browser)'} ↔ attorney")
+        logger.info(
+            f"[MOCK] Would bridge caller {caller_sid or '(browser)'} ↔ attorney"
+        )
         if caller_sid:
-            await _twilio_post(f"/Calls/{caller_sid}.json", {
-                "Twiml": (
-                    "<Response><Say>Mock bridge: attorney accepted. "
-                    "Ending demo here.</Say><Hangup/></Response>"
-                ),
-            })
+            await _twilio_post(
+                f"/Calls/{caller_sid}.json",
+                {
+                    "Twiml": (
+                        "<Response><Say>Mock bridge: attorney accepted. "
+                        "Ending demo here.</Say><Hangup/></Response>"
+                    ),
+                },
+            )
         return
 
     conference = f"bridge_{caller_sid}"
@@ -236,9 +241,7 @@ async def _dial_attorney(
     # ──────────────────────────────────────────────────────────────────────────
 
     ws_url = (
-        PUBLIC_BASE_URL
-        .replace("https://", "wss://")
-        .replace("http://", "ws://")
+        PUBLIC_BASE_URL.replace("https://", "wss://").replace("http://", "ws://")
         + ATTORNEY_BOT_WEBSOCKET_PATH
     )
 
@@ -254,11 +257,14 @@ async def _dial_attorney(
     )
 
     try:
-        resp = await _twilio_post("/Calls.json", {
-            "To": attorney_number,
-            "From": TWILIO_PHONE_NUMBER,
-            "Twiml": twiml,
-        })
+        resp = await _twilio_post(
+            "/Calls.json",
+            {
+                "To": attorney_number,
+                "From": TWILIO_PHONE_NUMBER,
+                "Twiml": twiml,
+            },
+        )
     except RuntimeError as e:
         logger.error(f"Failed to dial attorney: {e}")
         declined_event.set()
@@ -271,7 +277,9 @@ async def _dial_attorney(
         return
 
     attorney_sid_holder.append(attorney_sid)
-    logger.info(f"Dialed attorney {attorney_number} ({contact_name}), call_sid={attorney_sid}")
+    logger.info(
+        f"Dialed attorney {attorney_number} ({contact_name}), call_sid={attorney_sid}"
+    )
 
     t_accept = asyncio.create_task(accepted_event.wait())
     t_decline = asyncio.create_task(declined_event.wait())
@@ -354,6 +362,7 @@ async def _warm_transfer(
 # Attorney briefing helper
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _build_attorney_briefing(
     context: dict,
     case_summary: str,
@@ -365,7 +374,8 @@ def _build_attorney_briefing(
     caller_name = context.get("caller_name", "")
     case_type = context.get("case_type_slug", case_summary)
     answers = {
-        k: v for k, v in context.items()
+        k: v
+        for k, v in context.items()
         if k not in ("case_type_id", "case_type_slug", "caller_name", "contact_name")
     }
 
@@ -385,6 +395,7 @@ def _build_attorney_briefing(
 # ─────────────────────────────────────────────────────────────────────────────
 # Flow node helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _pick_transfer_rule(transfer_rules: list[dict]) -> dict | None:
     """Pick highest-priority patch-enabled transfer rule."""
@@ -426,7 +437,7 @@ async def extract_answers_from_description(
         'Example output: {"first_name": "John", "state": "Texas"}'
     )
     user = (
-        f"Caller said:\n\"{description}\"\n\n"
+        f'Caller said:\n"{description}"\n\n'
         f"Intake questions (field_id: question):\n{field_lines}\n\n"
         "Return the JSON object of confidently-extracted answers."
     )
@@ -461,7 +472,9 @@ async def extract_answers_from_description(
         if k in valid_ids and str(v).strip()
     }
     if cleaned:
-        logger.info(f"Pre-filled {len(cleaned)} answer(s) from intro: {list(cleaned.keys())}")
+        logger.info(
+            f"Pre-filled {len(cleaned)} answer(s) from intro: {list(cleaned.keys())}"
+        )
     return cleaned
 
 
@@ -469,17 +482,21 @@ def make_save_node(collected: dict) -> NodeConfig:
     """Terminal node — thanks caller and ends the conversation."""
     return NodeConfig(
         name="save_and_end",
-        task_messages=[{
-            "role": "developer",
-            "content": (
-                "Thank the caller warmly, let them know their information has been received "
-                "and someone will be in touch shortly. Then end the call."
-            ),
-        }],
+        # Reset tool_choice to 'auto' — this node has no tools, so a lingering
+        # 'required' from the case-type node would 400 the OpenAI call.
+        pre_actions=[{"type": "set_tool_choice", "choice": "auto"}],
+        task_messages=[
+            {
+                "role": "developer",
+                "content": (
+                    "Thank the caller warmly, let them know their information has been received "
+                    "and someone will be in touch shortly. Then end the call."
+                ),
+            }
+        ],
         post_actions=[{"type": "end_conversation"}],
         functions=[],
     )
-
 
 
 async def handle_answer(
@@ -503,7 +520,13 @@ async def handle_answer(
     logger.info(f"Q[{q['field_id']}] = {answer!r}")
 
     return answer, make_question_node(
-        questions, collected, index + 1, transfer_rule, call_sid, firm, case_types,
+        questions,
+        collected,
+        index + 1,
+        transfer_rule,
+        call_sid,
+        firm,
+        case_types,
         transfer_in_progress=transfer_in_progress,
     )
 
@@ -535,13 +558,16 @@ async def handle_question_transfer(
 
     return "transfer_failed", NodeConfig(
         name="attorney_unavailable",
-        task_messages=[{
-            "role": "developer",
-            "content": (
-                "Tell the caller the attorney is currently unavailable and you were unable "
-                "to connect them. Apologize briefly and end the call."
-            ),
-        }],
+        pre_actions=[{"type": "set_tool_choice", "choice": "auto"}],
+        task_messages=[
+            {
+                "role": "developer",
+                "content": (
+                    "Tell the caller the attorney is currently unavailable and you were unable "
+                    "to connect them. Apologize briefly and end the call."
+                ),
+            }
+        ],
         post_actions=[{"type": "end_conversation"}],
         functions=[],
     )
@@ -566,7 +592,13 @@ async def handle_pivot(
     except Exception as e:
         logger.error(f"Pivot fetch failed for {ctype_id}: {e}")
         return "pivot_failed", make_question_node(
-            questions, collected, index, transfer_rule, call_sid, firm, case_types,
+            questions,
+            collected,
+            index,
+            transfer_rule,
+            call_sid,
+            firm,
+            case_types,
             transfer_in_progress=transfer_in_progress,
         )
 
@@ -581,7 +613,13 @@ async def handle_pivot(
         return ctype_id, make_save_node(new_collected)
 
     return ctype_id, make_question_node(
-        new_questions, new_collected, 0, new_transfer_rule, call_sid, firm, case_types,
+        new_questions,
+        new_collected,
+        0,
+        new_transfer_rule,
+        call_sid,
+        firm,
+        case_types,
         transfer_in_progress=transfer_in_progress,
     )
 
@@ -636,7 +674,10 @@ def make_question_node(
                 "Just call this function with whatever the caller said."
             ),
             properties={
-                "answer": {"type": "string", "description": "Exactly what the caller said"},
+                "answer": {
+                    "type": "string",
+                    "description": "Exactly what the caller said",
+                },
             },
             required=["answer"],
             handler=partial(
@@ -673,43 +714,56 @@ def make_question_node(
 
     if case_types:
         case_list = "\n".join(f"- {ct['label']} (id: {ct['id']})" for ct in case_types)
-        functions.append(FlowsFunctionSchema(
-            name="change_case_type",
-            description=(
-                "Call this if the caller mentions they want to discuss a different or additional "
-                f"legal matter. Available case types:\n{case_list}"
-            ),
-            properties={
-                "case_type_id": {
-                    "type": "string",
-                    "description": "The id of the new case type",
+        functions.append(
+            FlowsFunctionSchema(
+                name="change_case_type",
+                description=(
+                    "ONLY call this if the caller EXPLICITLY and CLEARLY says they want to switch to a "
+                    "completely different legal matter than the one being discussed — for example "
+                    "'actually I also need help with a traffic ticket' or 'forget the divorce, I have a "
+                    "bankruptcy question'. "
+                    "Do NOT call this while collecting normal answers (name, email, phone, yes/no). "
+                    "Do NOT call this if you are unsure. When in doubt, call record_answer instead. "
+                    f"Available case types:\n{case_list}"
+                ),
+                properties={
+                    "case_type_id": {
+                        "type": "string",
+                        "description": "The id of the new case type",
+                    },
                 },
-            },
-            required=["case_type_id"],
-            handler=partial(
-                handle_pivot,
-                firm=firm,
-                collected=collected,
-                questions=questions,
-                index=index,
-                transfer_rule=transfer_rule,
-                call_sid=call_sid,
-                case_types=case_types,
-                transfer_in_progress=transfer_in_progress,
-            ),
-        ))
+                required=["case_type_id"],
+                handler=partial(
+                    handle_pivot,
+                    firm=firm,
+                    collected=collected,
+                    questions=questions,
+                    index=index,
+                    transfer_rule=transfer_rule,
+                    call_sid=call_sid,
+                    case_types=case_types,
+                    transfer_in_progress=transfer_in_progress,
+                ),
+            )
+        )
 
     return NodeConfig(
         name=f"q_{q['field_id']}",
-        task_messages=[{
-            "role": "developer",
-            "content": (
-                f'Ask the caller this exact question, word for word: "{q["question"]}"{options_hint} '
-                "After the caller responds — no matter what they say — call record_answer immediately. "
-                "Do NOT respond conversationally first. Do NOT say 'great' or 'I see' or ask follow-ups. "
-                "Do NOT offer advice or empathy. Call record_answer, then the next question will play."
-            ),
-        }],
+        # Reset tool_choice to 'auto' — the case-type node forced 'required'.
+        # On question nodes we must NOT force, or the model machine-guns
+        # record_answer against stale prompts with no new user input.
+        pre_actions=[{"type": "set_tool_choice", "choice": "auto"}],
+        task_messages=[
+            {
+                "role": "developer",
+                "content": (
+                    f'Ask the caller this exact question, word for word: "{q["question"]}"{options_hint} '
+                    "After the caller responds — no matter what they say — call record_answer immediately. "
+                    "Do NOT respond conversationally first. Do NOT say 'great' or 'I see' or ask follow-ups. "
+                    "Do NOT offer advice or empathy. Call record_answer, then the next question will play."
+                ),
+            }
+        ],
         functions=functions,
     )
 
@@ -717,6 +771,7 @@ def make_question_node(
 # ─────────────────────────────────────────────────────────────────────────────
 # Case type node handlers
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 async def handle_case_type(
     args: dict,
@@ -762,7 +817,13 @@ async def handle_case_type(
         collected.update(prefilled)
 
     return ctype_id, make_question_node(
-        questions, collected, 0, transfer_rule, call_sid, firm, case_types,
+        questions,
+        collected,
+        0,
+        transfer_rule,
+        call_sid,
+        firm,
+        case_types,
         transfer_in_progress=transfer_in_progress,
     )
 
@@ -787,13 +848,16 @@ async def handle_case_type_transfer(
 
     return "transfer_failed", NodeConfig(
         name="attorney_unavailable",
-        task_messages=[{
-            "role": "developer",
-            "content": (
-                "Tell the caller the attorney is currently unavailable and you were unable "
-                "to connect them. Apologize briefly and end the call."
-            ),
-        }],
+        pre_actions=[{"type": "set_tool_choice", "choice": "auto"}],
+        task_messages=[
+            {
+                "role": "developer",
+                "content": (
+                    "Tell the caller the attorney is currently unavailable and you were unable "
+                    "to connect them. Apologize briefly and end the call."
+                ),
+            }
+        ],
         post_actions=[{"type": "end_conversation"}],
         functions=[],
     )
@@ -816,6 +880,10 @@ def make_case_type_node(
 
     return NodeConfig(
         name="select_case_type",
+        # Don't run LLM inference on node entry — the tts_say greeting is the only
+        # opening line. Otherwise the LLM generates a SECOND greeting ("Hello! How
+        # can I assist you?") on top of the static one. Wait for the caller.
+        respond_immediately=False,
         role_message=(
             f"You are a strict intake receptionist for {firm['name']}. "
             "Your ONLY job is to collect information by calling the available functions. "
@@ -825,22 +893,27 @@ def make_case_type_node(
             "When a caller gives you information, call the appropriate function immediately. "
             "Never engage in conversation — only collect and record."
         ),
-        task_messages=[{
-            "role": "developer",
-            "content": (
-                "The caller has already been greeted. Do NOT say hello or repeat the greeting. "
-                "Wait silently for the caller to describe their situation. "
-                "Listen to what they describe. DO NOT list or mention any case types out loud. "
-                "DO NOT respond conversationally or ask follow-up questions under any circumstances. "
-                "As soon as you can identify the case type from what the caller said — even partially — "
-                "call select_case_type immediately without saying anything first. "
-                "When you call it, pass caller_description containing the caller's FULL verbatim "
-                "statement — every name, location, date, and detail they mentioned. "
-                "Internally match their description to one of these case types:\n"
-                f"{case_list}"
-            ),
-        }],
-        pre_actions=[{"type": "tts_say", "text": greeting}],
+        task_messages=[
+            {
+                "role": "developer",
+                "content": (
+                    "The caller has already been greeted. Do NOT say hello or repeat the greeting. "
+                    "Wait silently for the caller to describe their situation. "
+                    "Listen to what they describe. DO NOT list or mention any case types out loud. "
+                    "DO NOT respond conversationally or ask follow-up questions under any circumstances. "
+                    "As soon as you can identify the case type from what the caller said — even partially — "
+                    "call select_case_type immediately without saying anything first. "
+                    "When you call it, pass caller_description containing the caller's FULL verbatim "
+                    "statement — every name, location, date, and detail they mentioned. "
+                    "Internally match their description to one of these case types:\n"
+                    f"{case_list}"
+                ),
+            }
+        ],
+        pre_actions=[
+            {"type": "tts_say", "text": greeting},
+            {"type": "set_tool_choice", "choice": "required"},
+        ],
         functions=[
             FlowsFunctionSchema(
                 name="select_case_type",
@@ -892,6 +965,7 @@ def make_case_type_node(
 # Attorney bot pipeline handlers
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 async def handle_attorney_accept(
     _args: dict,
     fm: FlowManager,
@@ -915,13 +989,15 @@ async def handle_attorney_decline(
     declined_event.set()
     return "declined", NodeConfig(
         name="attorney_decline_end",
-        task_messages=[{
-            "role": "developer",
-            "content": (
-                "Tell the attorney the call has been declined and the caller will be notified. "
-                "Be brief and polite."
-            ),
-        }],
+        task_messages=[
+            {
+                "role": "developer",
+                "content": (
+                    "Tell the attorney the call has been declined and the caller will be notified. "
+                    "Be brief and polite."
+                ),
+            }
+        ],
         post_actions=[{"type": "end_conversation"}],
         functions=[],
     )
@@ -930,6 +1006,7 @@ async def handle_attorney_decline(
 # ─────────────────────────────────────────────────────────────────────────────
 # Pipeline builder (shared by all bot variants)
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _build_pipeline(transport, voice_id: str = DEFAULT_VOICE_ID):
     """Build the STT → LLM → TTS pipeline and return (worker, flow_manager)."""
@@ -949,15 +1026,17 @@ def _build_pipeline(transport, voice_id: str = DEFAULT_VOICE_ID):
             vad_analyzer=SileroVADAnalyzer(),
         ),
     )
-    pipeline = Pipeline([
-        transport.input(),
-        stt,
-        aggregators.user(),
-        llm,
-        tts,
-        transport.output(),
-        aggregators.assistant(),
-    ])
+    pipeline = Pipeline(
+        [
+            transport.input(),
+            stt,
+            aggregators.user(),
+            llm,
+            tts,
+            transport.output(),
+            aggregators.assistant(),
+        ]
+    )
     worker = PipelineWorker(
         pipeline,
         params=PipelineParams(enable_metrics=True, enable_usage_metrics=True),
@@ -968,12 +1047,26 @@ def _build_pipeline(transport, voice_id: str = DEFAULT_VOICE_ID):
         worker=worker,
         transport=transport,
     )
+
+    # Custom action: set the LLM's tool_choice at node entry. Lets us FORCE a
+    # function call on the case-type node (so the bot collects instead of advising)
+    # while keeping question nodes on 'auto' (so they don't machine-gun record_answer
+    # on stale prompts when there's no new user input).
+    async def _set_tool_choice(action: dict, _fm):
+        choice = action.get("choice", "auto")
+        await worker.queue_frame(
+            LLMUpdateSettingsFrame(delta=LLMSettings(extra={"tool_choice": choice}))
+        )
+
+    flow_manager.register_action("set_tool_choice", _set_tool_choice)
+
     return worker, flow_manager
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Attorney bot — runs on the attorney's outbound call leg
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 async def run_attorney_bot(
     websocket: WebSocket,
@@ -1013,15 +1106,17 @@ async def run_attorney_bot(
 
     attorney_node = NodeConfig(
         name="attorney_intro",
-        task_messages=[{
-            "role": "developer",
-            "content": (
-                f'Say exactly: "{briefing}" '
-                "Then wait for the attorney to respond. "
-                "If they say yes or agree to take the call, call accept_call. "
-                "If they say no, decline, or are unavailable, call decline_call."
-            ),
-        }],
+        task_messages=[
+            {
+                "role": "developer",
+                "content": (
+                    f'Say exactly: "{briefing}" '
+                    "Then wait for the attorney to respond. "
+                    "If they say yes or agree to take the call, call accept_call. "
+                    "If they say no, decline, or are unavailable, call decline_call."
+                ),
+            }
+        ],
         functions=[
             FlowsFunctionSchema(
                 name="accept_call",
@@ -1058,7 +1153,9 @@ async def run_attorney_bot(
     async def on_client_disconnected(transport, client):
         await worker.cancel()
         if not accepted_event.is_set() and not declined_event.is_set():
-            logger.info("Attorney disconnected without responding — treating as declined")
+            logger.info(
+                "Attorney disconnected without responding — treating as declined"
+            )
             declined_event.set()
 
     runner = WorkerRunner(handle_sigint=False)
@@ -1069,6 +1166,7 @@ async def run_attorney_bot(
 # ─────────────────────────────────────────────────────────────────────────────
 # Caller bot — browser/WebRTC variant
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 async def run_bot(connection: SmallWebRTCConnection) -> None:
     transport = SmallWebRTCTransport(
@@ -1107,6 +1205,7 @@ async def run_bot(connection: SmallWebRTCConnection) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 # Caller bot — Twilio telephony variant
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 async def run_bot_twilio(
     websocket: WebSocket,
