@@ -18,7 +18,8 @@ from pipecat.transports.smallwebrtc.request_handler import (
 )
 from pipecat_ai_prebuilt.frontend import PipecatPrebuiltUI
 
-from bot_core import run_bot, run_bot_twilio, run_attorney_bot
+from bot_webrtc import run_bot_webrtc as run_bot
+from bot_twilio import run_bot_twilio, run_attorney_side_bot as run_attorney_bot
 
 load_dotenv(override=True)
 

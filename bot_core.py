@@ -27,18 +27,11 @@ from pipecat.workers.runner import WorkerRunner
 from pipecat_flows import FlowManager, FlowsFunctionSchema, NodeConfig
 
 from api_client import fetch_case_type_questions, fetch_company_case_types
-from bot_twilio import _warm_transfer
+from bot_config import (
+    DEFAULT_VOICE_ID,
+)
 
 load_dotenv(override=True)
-
-DEFAULT_VOICE_ID = "32b3f3c5-7171-46aa-abe7-b598964aa793"
-HOLD_MUSIC_URL = "https://demo.twilio.com/docs/classic.mp3"
-ATTORNEY_BOT_WEBSOCKET_PATH = "/twilio/attorney-ws"
-
-TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
-TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
-TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER", "")
-PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
 
 
 class TransferRegistry:
@@ -244,6 +237,8 @@ async def handle_question_transfer(
         name = transfer_rule.get("contact_name", "the team")
 
     case_summary = collected.get("case_type_slug", "legal matter")
+    from bot_twilio import _warm_transfer  # late import avoids circular dependency
+
     success = await _warm_transfer(
         call_sid, number, name, case_summary, collected, transfer_in_progress
     )
@@ -525,6 +520,8 @@ async def handle_case_type_transfer(
 ) -> tuple:
     number = firm.get("transfer_number", "")
     name = firm.get("attorney_name", "the firm")
+
+    from bot_twilio import _warm_transfer  # late import avoids circular dependency
 
     success = await _warm_transfer(
         call_sid, number, name, "legal matter", {}, transfer_in_progress

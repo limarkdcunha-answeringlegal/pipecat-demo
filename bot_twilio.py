@@ -7,7 +7,7 @@ from loguru import logger
 import xml.sax.saxutils as xml_utils
 
 from pipecat_flows import FlowsFunctionSchema, NodeConfig
-from bot_core import (
+from bot_config import (
     ATTORNEY_BOT_WEBSOCKET_PATH,
     DEFAULT_VOICE_ID,
     HOLD_MUSIC_URL,
@@ -15,6 +15,8 @@ from bot_core import (
     TWILIO_ACCOUNT_SID,
     TWILIO_AUTH_TOKEN,
     TWILIO_PHONE_NUMBER,
+)
+from bot_core import (
     transfer_registry,
     _build_pipeline,
     fetch_transfer_context,
