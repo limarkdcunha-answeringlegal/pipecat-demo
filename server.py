@@ -18,7 +18,7 @@ from pipecat.transports.smallwebrtc.request_handler import (
 )
 from pipecat_ai_prebuilt.frontend import PipecatPrebuiltUI
 
-from bot import run_attorney_bot, run_bot, run_bot_twilio
+from bot_core import run_bot, run_bot_twilio, run_attorney_bot
 
 load_dotenv(override=True)
 
@@ -43,23 +43,12 @@ async def root():
     return Path("static/index.html").read_text()
 
 
-# ---------------------------------------------------------------------------
-# SmallWebRTC endpoints (browser + prebuilt UI)
-# ---------------------------------------------------------------------------
-
-
 @app.post("/start")
 async def start(request: Request):
-    """Prebuilt UI calls this first. Returns webrtcRequestParams so the
-    SmallWebRTC transport knows to POST the SDP offer to /offer."""
     host = request.headers.get("host", "localhost:7860")
     scheme = "https" if request.url.scheme == "https" else "http"
     base = f"{scheme}://{host}"
-    return {
-        "webrtcRequestParams": {
-            "endpoint": f"{base}/offer",
-        }
-    }
+    return {"webrtcRequestParams": {"endpoint": f"{base}/offer"}}
 
 
 async def _handle_offer(data: dict):
@@ -78,7 +67,6 @@ async def offer_post(data: dict):
 
 @app.patch("/offer")
 async def offer_patch(data: dict):
-    """Prebuilt SmallWebRTC client sends SDP offer as PATCH /offer."""
     return await _handle_offer(data)
 
 
@@ -104,11 +92,6 @@ async def ice_candidates(data: dict):
 
 @app.patch("/sessions/{pc_id}/api/offer")
 async def ice_candidates_prebuilt(pc_id: str, data: dict):
-    """ICE candidate trickle from the prebuilt SmallWebRTC client.
-
-    The client derives this URL by replacing '/start' in the start endpoint
-    with '/sessions/{pc_id}/api/offer' and sends PATCH requests here.
-    """
     candidates = [
         IceCandidate(
             candidate=c["candidate"],
@@ -121,23 +104,6 @@ async def ice_candidates_prebuilt(pc_id: str, data: dict):
         SmallWebRTCPatchRequest(pc_id=pc_id, candidates=candidates)
     )
     return {"status": "ok"}
-
-
-# ---------------------------------------------------------------------------
-# Twilio telephony endpoints
-# ---------------------------------------------------------------------------
-
-
-def _twiml_response(websocket_url: str) -> str:
-    """TwiML that instructs Twilio to stream call audio to our WebSocket."""
-    return (
-        '<?xml version="1.0" encoding="UTF-8"?>'
-        "<Response>"
-        "<Connect>"
-        f'<Stream url="{websocket_url}" />'
-        "</Connect>"
-        "</Response>"
-    )
 
 
 @app.post("/twilio/answer")

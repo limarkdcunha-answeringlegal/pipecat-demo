@@ -7,7 +7,7 @@ from loguru import logger
 load_dotenv(override=True)
 
 
-async def fetch_company_details(phone: str) -> dict:
+async def fetch_company_case_types(phone: str) -> dict:
     base_url = os.getenv("AL_BACKEND_BASE_URL", "")
     api_key = os.getenv("AL_BACKEND_API_KEY", "")
 
