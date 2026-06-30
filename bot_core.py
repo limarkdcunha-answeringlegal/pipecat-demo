@@ -178,7 +178,12 @@ def make_case_type_node(
                     "call select_case_type immediately without saying anything first. "
                     "When you call it, pass caller_description containing the caller's FULL verbatim "
                     "statement — every name, location, date, and detail they mentioned. "
-                    "Internally match their description to one of these case types:\n"
+                    "Match their described LEGAL MATTER to the most specific case type below by its label. "
+                    "The list below is EXACTLY what this firm handles — nothing else. If the caller's "
+                    "matter does NOT genuinely fit any entry, this firm does not handle it: still call "
+                    "select_case_type but pass an EMPTY string for case_type_id. Do NOT force a poor "
+                    "match onto an unrelated type.\n"
+                    "Case types this firm handles:\n"
                     f"{case_list}"
                 ),
             }
@@ -860,6 +865,112 @@ async def _fetch_and_build_question_node(
     )
 
 
+def make_out_of_scope_node(
+    *,
+    firm: dict,
+    case_types: list,
+    company_id: str,
+    call_sid: str,
+    transfer_in_progress: list,
+) -> NodeConfig:
+    """Caller's matter is one the firm does not handle. Politely say so and offer
+    further help. Listens once more — if they name something the firm DOES handle,
+    route into confirmation; otherwise thank them and end (no infinite loop, no
+    greeting replay).
+    """
+    case_list = "\n".join(f"- {ct['label']} (id: {ct['id']})" for ct in case_types)
+
+    async def handle_other_matter(args: dict, fm: FlowManager) -> tuple:
+        ctype_id = args.get("case_type_id", "")
+        description = args.get("caller_description", "")
+        matched = next((ct for ct in case_types if ct["id"] == ctype_id), None)
+        if matched:
+            node = make_confirm_case_type_node(
+                ctype_id=matched["id"],
+                ctype_label=matched["label"],
+                description=description,
+                case_types=case_types,
+                company_id=company_id,
+                call_sid=call_sid,
+                firm=firm,
+                transfer_in_progress=transfer_in_progress,
+            )
+            return "matched", node
+        # Still nothing the firm handles — close out warmly.
+        return "no_match", make_save_node({})
+
+    # Listen node — only entered after the caller actually replies to "anything else?".
+    # respond_immediately=False means the LLM does NOT get a free turn here; it only
+    # acts on the caller's next utterance, so found_other_matter can't fire on the
+    # stale opening transcript.
+    listen_node = NodeConfig(
+        name="out_of_scope_listen",
+        respond_immediately=False,
+        pre_actions=[{"type": "set_tool_choice", "choice": "auto"}],
+        task_messages=[
+            {
+                "role": "developer",
+                "content": (
+                    "The caller just replied to your 'is there anything else?' question. "
+                    "Interpret ONLY this latest reply:\n"
+                    "- If it describes a matter that maps to one of the case types below, call "
+                    "found_other_matter with its id and their verbatim description.\n"
+                    "- If they have nothing else, decline, or it still maps to none of them, call "
+                    "found_other_matter with an empty case_type_id.\n"
+                    "Never reply in plain text.\n"
+                    f"Case types this firm handles:\n{case_list}"
+                ),
+            }
+        ],
+        functions=[
+            FlowsFunctionSchema(
+                name="found_other_matter",
+                description=(
+                    "Call after the caller responds to 'anything else'. Pass case_type_id if their "
+                    "matter maps to a handled case type, else empty string."
+                ),
+                properties={
+                    "case_type_id": {
+                        "type": "string",
+                        "description": "Matched case type id, or empty string if none / nothing else.",
+                    },
+                    "caller_description": {
+                        "type": "string",
+                        "description": "The caller's verbatim restatement.",
+                    },
+                },
+                required=["case_type_id"],
+                handler=handle_other_matter,
+            ),
+        ],
+    )
+
+    async def _transition_to_listen(_action: dict, fm: FlowManager) -> None:
+        await fm.set_node_from_config(listen_node)
+
+    # Ask node — speaks the apology + "anything else?" then stops. functions=[] makes
+    # it structurally impossible to cascade into found_other_matter on the same turn.
+    return NodeConfig(
+        name="out_of_scope",
+        respond_immediately=True,
+        functions=[],
+        pre_actions=[{"type": "set_tool_choice", "choice": "auto"}],
+        post_actions=[{"type": "function", "handler": _transition_to_listen}],
+        task_messages=[
+            {
+                "role": "developer",
+                "content": (
+                    "The caller has described a matter this firm does NOT handle. In ONE warm, "
+                    "apologetic sentence, tell them this isn't something the firm can help with, "
+                    "then ask if there's anything else you can help them with. Phrase it naturally. "
+                    "Do NOT name a specific case type as something you handle. "
+                    "Speak ONLY that sentence — do not call any function."
+                ),
+            }
+        ],
+    )
+
+
 def make_confirm_case_type_node(
     *,
     ctype_id: str,
@@ -885,14 +996,43 @@ def make_confirm_case_type_node(
         )
         return "confirmed", node
 
-    async def handle_corrected(_args: dict, fm: FlowManager) -> tuple:
-        node = make_case_type_node(
-            {"firm": firm, "case_types": case_types},
+    async def handle_corrected(args: dict, fm: FlowManager) -> tuple:
+        # Caller said the detected type was wrong. The LLM passes the matter it now
+        # understands (matched to a case_type_id if it maps to one the firm handles).
+        # If it maps to a handled type, re-confirm that type. If it maps to nothing,
+        # the firm doesn't handle it — decline gracefully and offer further help.
+        new_ctype_id = args.get("case_type_id", "")
+        new_description = args.get("corrected_description", "") or description
+        matched = next((ct for ct in case_types if ct["id"] == new_ctype_id), None)
+
+        # The caller just rejected ctype_id. If the LLM re-maps to the SAME id, the
+        # match is wrong again — don't re-confirm it (that loops). Treat as unmatched.
+        if matched and matched["id"] == ctype_id:
+            matched = None
+
+        if matched:
+            node = make_confirm_case_type_node(
+                ctype_id=matched["id"],
+                ctype_label=matched["label"],
+                description=new_description,
+                case_types=case_types,
+                company_id=company_id,
+                call_sid=call_sid,
+                firm=firm,
+                transfer_in_progress=transfer_in_progress,
+            )
+            return "corrected", node
+
+        node = make_out_of_scope_node(
+            firm=firm,
+            case_types=case_types,
+            company_id=company_id,
             call_sid=call_sid,
             transfer_in_progress=transfer_in_progress,
         )
-        return "corrected", node
+        return "out_of_scope", node
 
+    case_list = "\n".join(f"- {ct['label']} (id: {ct['id']})" for ct in case_types)
     confirm_text = (
         f"Just to confirm — you're calling about a {ctype_label} matter, is that right?"
     )
@@ -913,9 +1053,13 @@ def make_confirm_case_type_node(
                     "You have exactly TWO valid actions and you MUST pick one of them:\n"
                     "- confirm_case_type — for ANY affirmative: yes, yeah, yep, correct, right, "
                     "that's right, sure, uh-huh, mhm, exactly, or similar.\n"
-                    "- correct_case_type — ONLY if the caller explicitly says no, wrong, or names a different matter.\n"
+                    "- correct_case_type — ONLY if the caller explicitly says no, wrong, or names a different matter. "
+                    "When you call correct_case_type, re-map what the caller now describes to one of the "
+                    "case types below and pass its id as case_type_id (leave case_type_id empty ONLY if it "
+                    "matches none of them), and pass the caller's restated matter as corrected_description.\n"
                     "Do NOT call select_case_type — that step is finished; ignore any earlier instruction to call it. "
-                    "When in doubt, call confirm_case_type. Never reply in plain text."
+                    "When in doubt, call confirm_case_type. Never reply in plain text.\n"
+                    f"Case types this firm handles:\n{case_list}"
                 ),
             }
         ],
@@ -932,9 +1076,24 @@ def make_confirm_case_type_node(
             ),
             FlowsFunctionSchema(
                 name="correct_case_type",
-                description="Call this ONLY when the caller explicitly says no, that's wrong, or names a different legal matter.",
-                properties={},
-                required=[],
+                description=(
+                    "Call this ONLY when the caller explicitly says no, that's wrong, or names a "
+                    "different legal matter. Re-map their corrected matter to a handled case type."
+                ),
+                properties={
+                    "case_type_id": {
+                        "type": "string",
+                        "description": (
+                            "The id of the case type the caller's corrected matter maps to. "
+                            "Empty string if it matches none of the firm's case types."
+                        ),
+                    },
+                    "corrected_description": {
+                        "type": "string",
+                        "description": "The caller's restated matter, verbatim.",
+                    },
+                },
+                required=["case_type_id"],
                 handler=handle_corrected,
             ),
         ],
@@ -952,16 +1111,23 @@ async def handle_case_type(
     transfer_in_progress: list,
 ) -> tuple:
     ctype_id = args.get("case_type_id", "")
+    description = args.get("caller_description", "")
     selected = next((ct for ct in case_types if ct["id"] == ctype_id), None)
 
+    # No match means the caller's matter isn't among the firm's enabled case types —
+    # i.e. the firm doesn't handle it. Do NOT fall back to a wrong type; decline.
     if not selected:
-        logger.warning(f"Unknown case_type_id={ctype_id!r} — falling back to first")
-        selected = case_types[0] if case_types else None
+        logger.info(
+            f"No case type matched id={ctype_id!r} — firm does not handle this matter"
+        )
+        return ctype_id, make_out_of_scope_node(
+            firm=firm,
+            case_types=case_types,
+            company_id=company_id,
+            call_sid=call_sid,
+            transfer_in_progress=transfer_in_progress,
+        )
 
-    if not selected:
-        return ctype_id, make_save_node({"case_type_id": ctype_id})
-
-    description = args.get("caller_description", "")
     return ctype_id, make_confirm_case_type_node(
         ctype_id=ctype_id,
         ctype_label=selected["label"],
