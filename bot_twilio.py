@@ -66,6 +66,21 @@ async def _hold_caller(call_sid: str) -> None:
         raise
 
 
+async def _hangup_caller(call_sid: str, message: str) -> None:
+    """Speak a final message to the caller and hang up. Used when transfer fails
+    after intake is complete — there is no bot flow to resume to, so resuming would
+    restart the greeting. Instead we say goodbye and end the call."""
+    if not call_sid:
+        return
+    safe = xml_utils.escape(message, entities={"'": "&apos;"})
+    twiml = f"<Response><Say>{safe}</Say><Hangup/></Response>"
+    try:
+        await _twilio_post(f"/Calls/{call_sid}.json", {"Twiml": twiml})
+        logger.info(f"Caller {call_sid} given goodbye and hung up")
+    except RuntimeError as e:
+        logger.error(f"Failed to hang up caller {call_sid}: {e}")
+
+
 async def _resume_caller(call_sid: str) -> None:
     """Take caller off hold and reconnect them to the bot WebSocket pipeline.
     Called when attorney declines or transfer fails — without this the caller
@@ -150,11 +165,23 @@ def _build_attorney_briefing(
     name_part = f"from {caller_name} " if caller_name else ""
     lines = [f"You have an incoming call {name_part}regarding a {case_type} case."]
 
+    # Side concerns the caller raised mid-intake (different matters / remarks) are
+    # stored as a list — surface them separately so the attorney hears them.
+    side_concerns = answers.pop("additional_concerns", None)
+
     if answers:
         lines.append("Here is what was collected:")
         for field, value in answers.items():
             label = field.replace("_", " ").capitalize()
             lines.append(f"{label}: {value}.")
+
+    if side_concerns:
+        joined = (
+            "; ".join(side_concerns)
+            if isinstance(side_concerns, list)
+            else str(side_concerns)
+        )
+        lines.append(f"The caller also mentioned: {joined}.")
 
     lines.append("Would you like to accept this call?")
     return " ".join(lines)
@@ -233,6 +260,7 @@ async def _warm_transfer(
     case_summary: str,
     collected: dict,
     transfer_in_progress: list,
+    resume_on_fail: bool = True,
 ) -> bool:
     """Full warm transfer: store context → hold caller → dial attorney bot → bridge or resume.
 
@@ -276,11 +304,26 @@ async def _warm_transfer(
                 return True
             except RuntimeError as e:
                 logger.error(f"Bridge failed after accept: {e}")
-                await _resume_caller(call_sid)
+                if resume_on_fail:
+                    await _resume_caller(call_sid)
+                else:
+                    await _hangup_caller(
+                        call_sid,
+                        "I'm sorry, I wasn't able to connect you. Someone will follow up shortly. Goodbye.",
+                    )
                 return False
         else:
-            logger.info(f"Transfer declined/timed out for {call_sid} — resuming caller")
-            await _resume_caller(call_sid)
+            if resume_on_fail:
+                logger.info(
+                    f"Transfer declined/timed out for {call_sid} — resuming caller"
+                )
+                await _resume_caller(call_sid)
+            else:
+                logger.info(f"Transfer failed for {call_sid} after intake — hanging up")
+                await _hangup_caller(
+                    call_sid,
+                    "I'm sorry, I wasn't able to connect you to someone right now. Your information has been saved and someone will follow up shortly. Goodbye.",
+                )
             return False
 
     finally:
@@ -322,7 +365,7 @@ async def run_attorney_side_bot(
     accepted_event: asyncio.Event = state.get("accepted", asyncio.Event())
     declined_event: asyncio.Event = state.get("declined", asyncio.Event())
 
-    briefing = _build_attorney_briefing(context, case_summary, contact_name)
+    briefing = _build_attorney_briefing(context, case_summary)
 
     attorney_node = NodeConfig(
         name="attorney_intro",
@@ -363,7 +406,7 @@ async def run_attorney_side_bot(
         ],
     )
 
-    worker, flow_manager = _build_pipeline(transport, voice_id)
+    worker, flow_manager, _context = _build_pipeline(transport, voice_id)
 
     @worker.event_handler("on_pipeline_started")
     async def on_pipeline_started(worker, frame):

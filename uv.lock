@@ -635,6 +635,22 @@ wheels = [
 ]
 
 [[package]]
+name = "deepgram-sdk"
+version = "7.3.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "pydantic-core" },
+    { name = "typing-extensions" },
+    { name = "websockets" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/1e/f4/72418cc556fbf08216a1cdd66b11affb4077bbd749c1d6b0e77043b87fd2/deepgram_sdk-7.3.1.tar.gz", hash = "sha256:eaade4ea4bead9f009490cf20dcec09a0abd184af112e8a5ddb50cc82b7f98b9", size = 208270, upload-time = "2026-06-03T12:53:03.314Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a2/25/12535afe1c5e70988bc385109d2161f35d5e125ef52bef4bff25e018ca56/deepgram_sdk-7.3.1-py3-none-any.whl", hash = "sha256:57b01059240ee8193116773a7b1cec7d36802cee8c26d69939601c2497d1aafa", size = 559927, upload-time = "2026-06-03T12:53:01.712Z" },
+]
+
+[[package]]
 name = "detect-installer"
 version = "0.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2060,6 +2076,10 @@ cartesia = [
 daily = [
     { name = "daily-python" },
 ]
+deepgram = [
+    { name = "deepgram-sdk" },
+    { name = "websockets" },
+]
 google = [
     { name = "google-cloud-speech" },
     { name = "google-cloud-texttospeech" },
@@ -2107,7 +2127,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "dotenv" },
     { name = "fastapi" },
-    { name = "pipecat-ai", extra = ["cartesia", "daily", "google", "rnnoise", "webrtc"] },
+    { name = "pipecat-ai", extra = ["cartesia", "daily", "deepgram", "google", "rnnoise", "webrtc"] },
     { name = "pipecat-ai-flows" },
     { name = "pipecat-ai-prebuilt" },
     { name = "uvicorn" },
@@ -2123,7 +2143,7 @@ dev = [
 requires-dist = [
     { name = "dotenv", specifier = ">=0.9.9" },
     { name = "fastapi", specifier = ">=0.136.3" },
-    { name = "pipecat-ai", extras = ["cartesia", "daily", "google", "rnnoise", "silero", "webrtc"], specifier = ">=1.3.0" },
+    { name = "pipecat-ai", extras = ["cartesia", "daily", "deepgram", "google", "rnnoise", "silero", "webrtc"], specifier = ">=1.3.0" },
     { name = "pipecat-ai-flows", specifier = ">=1.2.0" },
     { name = "pipecat-ai-prebuilt", specifier = ">=1.0.2" },
     { name = "uvicorn", specifier = ">=0.49.0" },
