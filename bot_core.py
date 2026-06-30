@@ -558,6 +558,114 @@ def make_confirm_node(
     )
 
 
+def make_summary_confirm_node(
+    collected: dict,
+    transfer_rule: dict | None,
+    call_sid: str,
+    firm: dict,
+    transfer_in_progress: list,
+) -> NodeConfig:
+    """Before transferring, read the collected info back to the caller and ask for a
+    final go-ahead. Two-node (ask + listen) so the LLM speaks the summary and STOPS
+    — it can't cascade straight into a confirm function on the same turn.
+
+    On confirm -> end_of_intake (transfer). On correction -> note it into
+    additional_concerns (the attorney sees it in the briefing) and proceed anyway.
+    """
+    # Build a readable field: value list for the LLM to summarize. Skip internal keys
+    # and the side-concerns list (surfaced separately to the attorney).
+    skip = {"case_type_id", "case_type_slug", "additional_concerns"}
+    summary_lines = "\n".join(
+        f"- {field.replace('_', ' ').capitalize()}: {value}"
+        for field, value in collected.items()
+        if field not in skip and value not in (None, "")
+    )
+
+    def _to_end_node() -> NodeConfig:
+        return make_end_of_intake_node(
+            collected, transfer_rule, call_sid, firm, transfer_in_progress
+        )
+
+    async def handle_confirm_transfer(_args: dict, fm: FlowManager) -> tuple:
+        return "confirmed", _to_end_node()
+
+    async def handle_correction(args: dict, fm: FlowManager) -> tuple:
+        # Don't re-ask; record what the caller says is wrong so the attorney sees it,
+        # then proceed to transfer.
+        correction = (args.get("correction", "") or "").strip()
+        if correction:
+            collected.setdefault("additional_concerns", [])
+            note = f"Caller correction at confirmation: {correction}"
+            if note not in collected["additional_concerns"]:
+                collected["additional_concerns"].append(note)
+            logger.info(f"Recorded summary correction: {correction!r}")
+        return "corrected", _to_end_node()
+
+    listen_node = NodeConfig(
+        name="summary_confirm_listen",
+        respond_immediately=False,
+        pre_actions=[{"type": "set_tool_choice", "choice": "auto"}],
+        task_messages=[
+            {
+                "role": "developer",
+                "content": (
+                    "The caller just responded to your summary and 'shall I connect you?' question. "
+                    "Interpret ONLY this latest reply:\n"
+                    "- Any affirmative (yes, yeah, please, go ahead, sounds good, etc.) -> call confirm_transfer.\n"
+                    "- If they point out something wrong or want to add/change a detail -> call "
+                    "record_correction with their exact words in `correction`.\n"
+                    "Never reply in plain text."
+                ),
+            }
+        ],
+        functions=[
+            FlowsFunctionSchema(
+                name="confirm_transfer",
+                description="Call when the caller confirms the summary is correct and agrees to be connected.",
+                properties={},
+                required=[],
+                handler=handle_confirm_transfer,
+            ),
+            FlowsFunctionSchema(
+                name="record_correction",
+                description="Call when the caller says something in the summary is wrong or wants to add a detail.",
+                properties={
+                    "correction": {
+                        "type": "string",
+                        "description": "The caller's correction or addition, in their own words.",
+                    },
+                },
+                required=["correction"],
+                handler=handle_correction,
+            ),
+        ],
+    )
+
+    async def _transition_to_listen(_action: dict, fm: FlowManager) -> None:
+        await fm.set_node_from_config(listen_node)
+
+    return NodeConfig(
+        name="summary_confirm",
+        respond_immediately=True,
+        functions=[],
+        pre_actions=[{"type": "set_tool_choice", "choice": "auto"}],
+        post_actions=[{"type": "function", "handler": _transition_to_listen}],
+        task_messages=[
+            {
+                "role": "developer",
+                "content": (
+                    "Intake is complete. Briefly and warmly read back the key details below to the "
+                    "caller in natural spoken sentences (not a bulleted list), then ask if everything "
+                    "is correct and whether you can go ahead and connect them with someone. Keep it "
+                    "concise — group related details, don't robotically list every field. "
+                    "Speak ONLY this summary and question — do not call any function.\n\n"
+                    f"Collected details:\n{summary_lines}"
+                ),
+            }
+        ],
+    )
+
+
 def make_end_of_intake_node(
     collected: dict,
     transfer_rule: dict | None,
@@ -657,7 +765,9 @@ def make_question_node(
             continue
         break
     else:
-        return make_end_of_intake_node(
+        # All questions answered — read back a summary and get a final go-ahead
+        # before the warm transfer (summary_confirm -> end_of_intake).
+        return make_summary_confirm_node(
             collected, transfer_rule, call_sid, firm, transfer_in_progress
         )
 
