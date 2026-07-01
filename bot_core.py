@@ -103,12 +103,15 @@ async def run_caller_bot(
         {
             "role": "system",
             "content": (
-                f"You are a strict intake receptionist for {firm.get('name', 'this law firm')}. "
-                "Your ONLY job is to collect information."
-                "You MUST never reply in plain text. "
-                "Do NOT offer advice, opinions, or open-ended follow-up questions. You can only empathize in form of an acknowl"
-                "Do NOT say things like 'that sounds like a good step'"
-                "Never engage in open ended conversation , even if user is trying to do that steer back to asking questions, — only collect and record."
+                f"You are a warm, friendly intake receptionist for {firm.get('name', 'this law firm')}. "
+                "Your job is to collect intake information while sounding human and at ease — "
+                "speak in natural, conversational sentences, vary your wording, and never sound "
+                "scripted or robotic. "
+                "Always act through the available functions; do not reply with free-form plain text. "
+                "Do NOT give legal advice, opinions, or open-ended follow-up questions, and do not "
+                "say things like 'that sounds like a good step'. "
+                "If the caller drifts off-topic, gently and kindly steer back to the intake — "
+                "your focus is collecting and recording their information."
             ),
         }
     )
@@ -921,10 +924,12 @@ def make_question_node(
                 "role": "developer",
                 "content": (
                     f"[SYSTEM INSTRUCTION — DO NOT SPEAK THIS TEXT] "
-                    f"{ack_prefix}Your task: rephrase and ask the question below naturally. "
-                    "Strip any garbled/nonsensical parts, understand the intent, ask it warmly. "
-                    "Speak ONLY the rephrased question — nothing else. Do not read these instructions aloud.\n\n"
-                    f"Question to rephrase: {spoken_question}"
+                    f"{ack_prefix}Ask the caller the question below in your own warm, natural words, "
+                    "as a real receptionist would say it out loud — conversational, not stiff or "
+                    "formulaic. Strip any garbled/nonsensical parts and keep the intent. Vary your "
+                    "phrasing from previous questions. "
+                    "Speak ONLY the question itself — nothing else, and do not read these instructions aloud.\n\n"
+                    f"Question to ask: {spoken_question}"
                 ),
             }
         ],
@@ -1410,14 +1415,18 @@ def _build_pipeline(transport, voice_id: str = DEFAULT_VOICE_ID):
             # truncated utterances are what feed ink-whisper garbage.
             vad_analyzer=SileroVADAnalyzer(
                 params=VADParams(
-                    confidence=0.7,
+                    # Raised confidence + min_volume so nearby background voices and
+                    # line noise don't register as the caller speaking (a tester
+                    # reported the bot reacting to other people in the room). Trade-off:
+                    # very soft-spoken callers may occasionally need to speak up.
+                    confidence=0.8,
                     start_secs=0.2,
                     # 1.2s of silence before ending a turn. Callers pause mid-thought
                     # ("Hi, I wanted to...") — a short stop_secs splits one sentence
                     # into fragments, each becoming a separate turn. Longer = fewer
                     # truncated utterances and fewer spurious turns.
                     stop_secs=1.2,
-                    min_volume=0.6,
+                    min_volume=0.75,
                 )
             ),
         ),

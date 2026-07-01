@@ -9,19 +9,23 @@ import httpx
 from loguru import logger
 
 
+# Warm, varied acks. Blank entries mean "no ack this turn" — acknowledging EVERY
+# question made the bot feel form-like and repetitive ("Acknowledged" every time).
+# Stiff words (Acknowledged/Understood) removed in favour of natural ones.
 _ACK_PHRASES = [
+    "",
     "Got it.",
+    "",
     "Thanks for that.",
-    "Okay.",
-    "Alright.",
-    "Perfect, thank you.",
-    "Understood.",
+    "",
+    "Okay, thank you.",
 ]
 
 
 def _ack_for(index: int) -> str:
     """Pick a rotating acknowledgement phrase. Deterministic (by index) so it varies
-    across questions without needing randomness."""
+    across questions without randomness. ~half are blank, so the bot acknowledges
+    only occasionally rather than before every single question."""
     return _ACK_PHRASES[index % len(_ACK_PHRASES)]
 
 

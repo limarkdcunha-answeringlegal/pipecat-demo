@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
-DEFAULT_VOICE_ID = "32b3f3c5-7171-46aa-abe7-b598964aa793"
+DEFAULT_VOICE_ID = "db6b0ed5-d5d3-463d-ae85-518a07d3c2b4"
 HOLD_MUSIC_URL = "https://demo.twilio.com/docs/classic.mp3"
 ATTORNEY_BOT_WEBSOCKET_PATH = "/twilio/attorney-ws"
 
